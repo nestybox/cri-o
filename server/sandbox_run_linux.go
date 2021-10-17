@@ -84,6 +84,42 @@ func (s *Server) configureSandboxIDMappings(mode string, sc *pb.LinuxSandboxSecu
 		return nil, nil
 	}
 
+	// Nestybox: small customization in CRI-O to improve container user-ns
+	// isolation; we plan to work with the CRI-O team to upstream this (or a
+	// similar) change.
+	//
+	// Problem: for user-ns mappings, CRI-O currently interprets the UID & GIDs
+	// in the pod's spec security context as host IDs rather than container
+	// IDs. For example, "runAsUser: 1000" causes CRI-O to map the root user in
+	// the container to host ID 1000, and "runAsUser: 0" causes CRI-O to map the
+	// root user in the container to host ID 0. This is not ideal for container
+	// isolation for obvious reasons, and it also makes it harder on users since
+	// they now need to worry about host ID mappings. But it was done by design
+	// on CRI-O given that filesystem user ID shifting/remapping is not yet
+	// widely available.
+	//
+	// Solution: for low-level container runtimes such as Sysbox that support
+	// filesystem user ID shifting/remapping, we don't need the pod's security
+	// context to refer to Host IDs. In fact, we want the pod's security context
+	// to refer to container IDs instead, as this is easier for users to
+	// understand and provides stronger container isolation (i.e., users only
+	// worry about IDs in the container and let the underlying runtime choose the
+	// proper user-ns host ID mappings to ensure container isolation).
+	//
+	// For example, "runAsUser: 1000" should cause CRI-O to start all containers
+	// in the pod as user 1000 within the container, and map all user IDs in the
+	// container to a range of unprivileged host IDs chosen by CRI-O. Similarly,
+	// "runAsUser: 0" should cause CRI-O to start all containers in the pod as
+	// user 0 within the container and map all user IDs in the container to
+	// unprivileged host IDs chosen by CRI-O.
+	//
+	// The variable podSecCtxIDsAreContainerIDs, when set to true, achieves this.
+	//
+	// Note that a user can always specify the mapping for the pod via the
+	// uidmapping and gidmapping annotations.
+
+	podSecCtxIDsAreContainerIDs := true
+
 	// expect a configuration like: private:uidmapping=0:1000:2000,2000:1000:2000;gidmapping=0:1000:4000,4000:1000:2000
 	parts := strings.SplitN(mode, ":", 2)
 
@@ -100,11 +136,15 @@ func (s *Server) configureSandboxIDMappings(mode string, sc *pb.LinuxSandboxSecu
 
 	_, uidMappingsPresent := values["uidmapping"]
 	_, gidMappingsPresent := values["gidmapping"]
-	// allow these options only if running as root
+
 	if uidMappingsPresent || gidMappingsPresent {
-		user := sc.GetRunAsUser()
-		if user == nil || user.Value != 0 {
-			return nil, errors.New("cannot use uidmapping or gidmapping if not running as root")
+		if !podSecCtxIDsAreContainerIDs {
+			// When the pod security context uses host IDs, allow these options
+			// only if running as root
+			user := sc.GetRunAsUser()
+			if user == nil || user.Value != 0 {
+				return nil, errors.New("cannot use uidmapping or gidmapping if not running as root")
+			}
 		}
 	}
 
@@ -115,12 +155,17 @@ func (s *Server) configureSandboxIDMappings(mode string, sc *pb.LinuxSandboxSecu
 			AutoUserNs: true,
 		}
 		// If keep-id=true then the UID:GID won't be changed inside of the user namespace and it
-		// will map to the same value on the host.
+		// will map to the same value on the host (i.e., identity mapped).
 		keepID := values["keep-id"] == t
-		// If map-to-root=true then the UID:GID will be mapped to root inside of the user namespace.
-		mapToRoot := values["map-to-root"] == t
-		if keepID && mapToRoot {
-			return nil, errors.Errorf("cannot use both keep-id and map-to-root: %q", mode)
+		mapToRoot := false
+		if !podSecCtxIDsAreContainerIDs {
+			// Map to root only makes sense when pod security context uses host IDs.
+			// If map-to-root=true then the UID:GID will be mapped to root inside
+			// of the user namespace.
+			mapToRoot = values["map-to-root"] == t
+			if keepID && mapToRoot {
+				return nil, errors.Errorf("cannot use both keep-id and map-to-root: %q", mode)
+			}
 		}
 		if v, ok := values["size"]; ok {
 			s, err := strconv.Atoi(v)
@@ -158,7 +203,7 @@ func (s *Server) configureSandboxIDMappings(mode string, sc *pb.LinuxSandboxSecu
 						HostID:      int(sc.GetRunAsUser().Value),
 						Size:        1,
 					})
-			} else {
+			} else if !podSecCtxIDsAreContainerIDs {
 				m := addToMappingsIfMissing(ret.AutoUserNsOpts.AdditionalUIDMappings, sc.GetRunAsUser().Value)
 				ret.AutoUserNsOpts.AdditionalUIDMappings = m
 			}
@@ -176,7 +221,7 @@ func (s *Server) configureSandboxIDMappings(mode string, sc *pb.LinuxSandboxSecu
 						HostID:      int(sc.GetRunAsGroup().Value),
 						Size:        1,
 					})
-			} else {
+			} else if !podSecCtxIDsAreContainerIDs {
 				m := addToMappingsIfMissing(ret.AutoUserNsOpts.AdditionalGIDMappings, sc.GetRunAsGroup().Value)
 				ret.AutoUserNsOpts.AdditionalGIDMappings = m
 			}
@@ -190,7 +235,7 @@ func (s *Server) configureSandboxIDMappings(mode string, sc *pb.LinuxSandboxSecu
 						HostID:      int(g),
 						Size:        1,
 					})
-			} else {
+			} else if !podSecCtxIDsAreContainerIDs {
 				m := addToMappingsIfMissing(ret.AutoUserNsOpts.AdditionalGIDMappings, g)
 				ret.AutoUserNsOpts.AdditionalGIDMappings = m
 			}
@@ -231,15 +276,17 @@ func (s *Server) configureSandboxIDMappings(mode string, sc *pb.LinuxSandboxSecu
 				gids = uids
 			}
 		}
-		// make sure the specified users are part of the namespace
-		if sc.GetRunAsUser() != nil {
-			uids = addToMappingsIfMissing(uids, sc.GetRunAsUser().Value)
-		}
-		if sc.GetRunAsGroup() != nil {
-			gids = addToMappingsIfMissing(gids, sc.GetRunAsGroup().Value)
-		}
-		for _, g := range sc.GetSupplementalGroups() {
-			gids = addToMappingsIfMissing(gids, g)
+		if !podSecCtxIDsAreContainerIDs {
+			// make sure the specified users are part of the namespace
+			if sc.GetRunAsUser() != nil {
+				uids = addToMappingsIfMissing(uids, sc.GetRunAsUser().Value)
+			}
+			if sc.GetRunAsGroup() != nil {
+				gids = addToMappingsIfMissing(gids, sc.GetRunAsGroup().Value)
+			}
+			for _, g := range sc.GetSupplementalGroups() {
+				gids = addToMappingsIfMissing(gids, g)
+			}
 		}
 
 		return &storage.IDMappingOptions{UIDMap: uids, GIDMap: gids}, nil
