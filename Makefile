@@ -106,6 +106,7 @@ BASE_LDFLAGS = ${SHRINKFLAGS} \
 	-X ${PROJECT}/internal/version.buildDate=${BUILD_DATE}
 
 GO_LDFLAGS = -ldflags '${BASE_LDFLAGS} ${EXTRA_LDFLAGS}'
+GO_LDFLAGS_STATIC = -ldflags '${BASE_LDFLAGS} ${EXTRA_LDFLAGS} -w -extldflags -static'
 
 all: binaries crio.conf docs
 
@@ -173,6 +174,9 @@ test/nri/nri.test: $(wildcard test/nri/*.go)
 
 bin/crio: $(GO_FILES)
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ ./cmd/crio
+
+bin/crio-static: $(GO_FILES)
+	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS_STATIC) -tags "$(BUILDTAGS) netgo osusergo static_build" -o $@ $(PROJECT)/cmd/crio
 
 build-static:
 	$(CONTAINER_RUNTIME) run --network=host --rm --privileged -ti -v /:/mnt \
@@ -394,7 +398,7 @@ mock-ociartifact-types: ${MOCKGEN}
 localintegration: clean binaries test-binaries
 	./test/test_runner.sh ${TESTFLAGS}
 
-binaries: bin/crio bin/pinns
+binaries: bin/crio bin/pinns bin/crio-static
 
 test-binaries: test/copyimg/copyimg test/checkseccomp/checkseccomp test/checkcriu/checkcriu \
 	test/nri/nri.test
