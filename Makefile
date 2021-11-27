@@ -117,6 +117,7 @@ BASE_LDFLAGS = ${SHRINKFLAGS} \
 	-X ${PROJECT}/internal/version.buildDate=${BUILD_DATE}
 
 GO_LDFLAGS = -ldflags '${BASE_LDFLAGS} ${EXTRA_LDFLAGS}'
+GO_LDFLAGS_STATIC = -ldflags '${BASE_LDFLAGS} ${EXTRA_LDFLAGS} -w -extldflags -static'
 
 all: binaries crio.conf docs
 
@@ -187,6 +188,9 @@ test/checkcriu/checkcriu: $(GO_FILES) .gopathok
 
 bin/crio: $(GO_FILES) .gopathok
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/cmd/crio
+
+bin/crio-static: $(GO_FILES) .gopathok
+	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS_STATIC) -tags "$(BUILDTAGS) netgo osusergo static_build" -o $@ $(PROJECT)/cmd/crio
 
 bin/crio-status: $(GO_FILES) .gopathok
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/cmd/crio-status
@@ -385,8 +389,8 @@ codecov:
 localintegration: clean binaries test-binaries
 	./test/test_runner.sh ${TESTFLAGS}
 
-binaries: bin/crio bin/crio-status bin/pinns
-test-binaries: test/copyimg/copyimg test/checkseccomp/checkseccomp test/checkcriu/checkcriu
+binaries: bin/crio bin/crio-status bin/pinns bin/crio-static
+test-binaries: test/copyimg/copyimg test/checkseccomp/checkseccomp
 
 MANPAGES_MD := $(wildcard docs/*.md)
 MANPAGES    := $(MANPAGES_MD:%.md=%)
