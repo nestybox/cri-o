@@ -282,6 +282,7 @@ func defaultConfigFromMemory() (*EngineConfig, error) {
 			"/sbin/crun",
 			"/bin/crun",
 			"/run/current-system/sw/bin/crun",
+			"/opt/local/bin/crun",
 		},
 		"runc": {
 			"/usr/bin/runc",
