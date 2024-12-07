@@ -86,8 +86,13 @@ static int write_sysctl_to_file (char * sysctl_key, char* sysctl_value)
   _cleanup_close_ int fd = openat (dirfd, sysctl_key, O_WRONLY);
   if (UNLIKELY (fd < 0))
   {
-    pwarnf ("failed to open /proc/sys/%s", sysctl_key);
-    return -1;
+    if (errno == ENOENT) {
+      pwarnf("sysctl /proc/sys/%s not present; ignoring it", sysctl_key);
+      return 0;
+    } else {
+      pwarnf ("failed to open file /proc/sys/%s", sysctl_key);
+      return -1;
+    }
   }
 
   int ret = TEMP_FAILURE_RETRY (write (fd, sysctl_value, strlen (sysctl_value)));
