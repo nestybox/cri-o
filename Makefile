@@ -109,6 +109,7 @@ BASE_LDFLAGS = ${SHRINKFLAGS} \
 	-X ${PROJECT}/internal/version.buildDate=${BUILD_DATE}
 
 GO_LDFLAGS = -ldflags '${BASE_LDFLAGS} ${EXTRA_LDFLAGS}'
+GO_LDFLAGS_STATIC = -ldflags '${BASE_LDFLAGS} ${EXTRA_LDFLAGS} -w -extldflags -static'
 
 define curl_to
 	curl -sSfL --retry 5 --retry-delay 3 "$(1)" -o $(2)
@@ -186,7 +187,7 @@ $(SHELLCHECK): $(BUILD_BIN_PATH)
 ##@ Build targets:
 
 .PHONY: binaries
-binaries: bin/crio bin/pinns ## Build all binaries.
+binaries: bin/crio bin/pinns bin/crio-static ## Build all binaries.
 
 .PHONY: test-binaries
 test-binaries: ## Build all test-binaries.
@@ -213,6 +214,9 @@ test/nri/nri.test: $(wildcard test/nri/*.go) ## Build the NRI test binary.
 
 bin/crio: $(GO_FILES) ## Build the CRI-O main binary.
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ ./cmd/crio
+
+bin/crio-static: $(GO_FILES)
+	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS_STATIC) -tags "$(BUILDTAGS) netgo osusergo static_build" -o $@ ./cmd/crio
 
 .PHONY: build-static
 build-static: ## Build the static binaries.
